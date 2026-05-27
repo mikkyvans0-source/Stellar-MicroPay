@@ -31,6 +31,8 @@ Thumbs.db
 
 # ─── Editor ───────────────────────────────────────────────────────────────────
 .vscode/
+# Track shared team config but not personal settings
+!.vscode/extensions.json
 .idea/
 *.swp
 *.swo
