@@ -70,7 +70,10 @@ app.use("/api/accounts", accountRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/health",       healthRoutes);
 
-// Global rate limiting — 100 requests per 15 minutes per IP
+// Global rate limiting — 100 requests per 15 minutes per IP.
+// standardHeaders: true  → emits RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset (RFC 6585 draft-7).
+// legacyHeaders: false   → suppresses deprecated X-RateLimit-* headers.
+// Clients should inspect RateLimit-Remaining and back off when it approaches 0.
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
