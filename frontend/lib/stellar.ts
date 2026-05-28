@@ -828,6 +828,23 @@ export async function getPaymentHistory(
 
   const operations = await operationsBuilder.call();
 
+  // Batch-fetch transaction memos: collect unique hashes for payment ops,
+  // then resolve them all in parallel instead of one-by-one (N+1 fix).
+  const paymentOps = operations.records.filter((op) => op.type === "payment");
+  const uniqueHashes = [...new Set(paymentOps.map((op) => (op as Horizon.HorizonApi.PaymentOperationResponse).transaction_hash))];
+
+  const memoMap = new Map<string, string | undefined>();
+  await Promise.all(
+    uniqueHashes.map(async (hash) => {
+      try {
+        const tx = await server.transactions().transaction(hash).call();
+        memoMap.set(hash, tx.memo && tx.memo_type === "text" ? tx.memo : undefined);
+      } catch {
+        memoMap.set(hash, undefined);
+      }
+    })
+  );
+
   const records: PaymentRecord[] = [];
 
   for (const op of operations.records) {
@@ -836,16 +853,8 @@ export async function getPaymentHistory(
     if (op.type === "payment") {
       const payment = op as Horizon.HorizonApi.PaymentOperationResponse;
 
-      // Fetch transaction for memo
-      let memo: string | undefined;
-      try {
-        const tx = await server.transactions().transaction(payment.transaction_hash).call();
-        if (tx.memo && tx.memo_type === "text") {
-          memo = tx.memo;
-        }
-      } catch {
-        // memo is optional, don't fail
-      }
+      // Look up memo from the pre-fetched batch
+      const memo = memoMap.get(payment.transaction_hash);
 
       const assetCode =
         payment.asset_type === "native" ? "XLM" : payment.asset_code || "???";

@@ -3,7 +3,7 @@
  * Displays paginated payment history for a Stellar account.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/router";
 import {
   getPaymentHistory,
@@ -134,6 +134,29 @@ export default function TransactionList({
   const [stalePaymentsAt, setStalePaymentsAt] = useState<number | null>(null);
   const router = useRouter();
 
+  // Sentinel ref for IntersectionObserver — defer initial fetch until visible
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      setIsVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "200px" }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   const updatePayments = useCallback(
     (next: PaymentRecord[]) => {
       setPayments(next);
@@ -207,8 +230,9 @@ export default function TransactionList({
   );
 
   useEffect(() => {
+    if (!isVisible) return;
     fetchPayments();
-  }, [fetchPayments]);
+  }, [fetchPayments, isVisible]);
 
   const handleLoadMore = () => fetchPayments(true);
 
@@ -237,7 +261,7 @@ export default function TransactionList({
 
   if (loading) {
     return (
-      <div className={compact ? "" : "card"}>
+      <div ref={containerRef} className={compact ? "" : "card"}>
         {!compact && (
           <div className="flex items-center justify-between mb-6">
             <div className="h-5 w-36 rounded-lg bg-cosmos-700 animate-pulse" />
@@ -268,7 +292,7 @@ export default function TransactionList({
 
   if (error) {
     return (
-      <div className={compact ? "" : "card"}>
+      <div ref={containerRef} className={compact ? "" : "card"}>
         <div className="text-center py-8">
           <p className="text-red-400 text-sm mb-3">{error}</p>
           <button
@@ -285,7 +309,7 @@ export default function TransactionList({
   if (payments.length === 0) {
     if (compact) return null;
     return (
-      <div className="card">
+      <div ref={containerRef} className="card">
         <div className="text-center py-12">
           <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-white/5 flex items-center justify-center">
             <HistoryIcon className="w-6 h-6 text-slate-500" />
@@ -300,7 +324,7 @@ export default function TransactionList({
   }
 
   return (
-    <div className={compact ? "" : "card"}>
+    <div ref={containerRef} className={compact ? "" : "card"}>
           {!compact && (
             <div className="flex items-center justify-between mb-6">
               <h2 className="font-display text-lg font-semibold text-white flex items-center gap-2">
