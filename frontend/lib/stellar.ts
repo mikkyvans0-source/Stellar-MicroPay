@@ -633,6 +633,44 @@ export async function buildPaymentTransaction({
 }): Promise<Transaction> {
   const sourceAccount = await server.loadAccount(fromPublicKey);
 
+  // For XLM, verify the destination account exists; if not, use create_account
+  // operation with a minimum 1 XLM deposit so the transaction doesn't fail.
+  if (asset === "XLM") {
+    let destinationExists = true;
+    try {
+      await server.loadAccount(toPublicKey);
+    } catch {
+      destinationExists = false;
+    }
+
+    if (!destinationExists) {
+      const amountNum = parseFloat(amount);
+      if (amountNum < 1) {
+        throw new Error(
+          "Destination account does not exist on the Stellar network. A minimum of 1 XLM is required to create a new account."
+        );
+      }
+      // Use create_account operation to fund and activate the new account
+      const builder = new TransactionBuilder(sourceAccount, {
+        fee: STELLAR_BASE_FEE_STROOPS_STRING,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          Operation.createAccount({
+            destination: toPublicKey,
+            startingBalance: amount,
+          })
+        )
+        .setTimeout(STELLAR_TRANSACTION_TIMEOUT_SECONDS);
+
+      if (memo) {
+        builder.addMemo(Memo.text(truncateMemoText(memo)));
+      }
+
+      return builder.build();
+    }
+  }
+
   // For USDC, verify the recipient has a trustline before building the tx
   if (asset === "USDC") {
     const recipient = await server.loadAccount(toPublicKey).catch(() => null);
