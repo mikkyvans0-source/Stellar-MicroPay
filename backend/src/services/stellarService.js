@@ -88,11 +88,29 @@ async function getPayments(publicKey, { limit = 20, cursor } = {}) {
 
   const payments = [];
 
-  for (const op of result.records) {
-    if (op.type !== "payment") continue;
+  const PAYMENT_TYPES = new Set([
+    "payment",
+    "path_payment_strict_send",
+    "path_payment_strict_receive",
+  ]);
 
-    const assetCode =
-      op.asset_type === "native" ? "XLM" : op.asset_code || "UNKNOWN";
+  for (const op of result.records) {
+    if (!PAYMENT_TYPES.has(op.type)) continue;
+
+    // path_payment ops expose dest_asset_* and dest_amount for the received side
+    const isPathPayment = op.type !== "payment";
+    const isSent = op.from === publicKey;
+
+    let assetCode;
+    if (isPathPayment && !isSent) {
+      assetCode =
+        op.dest_asset_type === "native" ? "XLM" : op.dest_asset_code || "UNKNOWN";
+    } else {
+      assetCode =
+        op.asset_type === "native" ? "XLM" : op.asset_code || "UNKNOWN";
+    }
+
+    const amount = isPathPayment && !isSent ? op.dest_amount : op.amount;
 
     let memo;
     try {
@@ -107,8 +125,8 @@ async function getPayments(publicKey, { limit = 20, cursor } = {}) {
 
     payments.push({
       id: op.id,
-      type: op.from === publicKey ? "sent" : "received",
-      amount: op.amount,
+      type: isSent ? "sent" : "received",
+      amount,
       asset: assetCode,
       from: op.from,
       to: op.to,

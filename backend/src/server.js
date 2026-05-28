@@ -63,12 +63,10 @@ app.use(
   })
 );
 
-// ─── Routes ───────────────────────────────────────────────────────────────────
+// ─── Health route (exempt from rate limiting) ─────────────────────────────────
 
-app.use("/api/auth",     authRoutes);
-app.use("/api/accounts", accountRoutes);
-app.use("/api/payments", paymentRoutes);
 app.use("/health",       healthRoutes);
+app.use("/api/health",   healthRoutes);
 
 // Global rate limiting — 100 requests per 15 minutes per IP.
 // standardHeaders: true  → emits RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset (RFC 6585 draft-7).
@@ -85,10 +83,10 @@ app.use(limiter);
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
+app.use("/api/auth",     authRoutes);
 app.use("/api/accounts", accountRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/analytics", analyticsRoutes);
-app.use("/api/health", healthRoutes);
 app.use("/api/turrets", turretsRoutes);
 app.use("/api/tips", tipsRoutes);
 app.use("/federation", federationRoutes);

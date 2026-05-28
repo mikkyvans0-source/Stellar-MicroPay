@@ -283,8 +283,9 @@ export default function TransactionList({
   }
 
   if (payments.length === 0) {
+    if (compact) return null;
     return (
-      <div className={compact ? "" : "card"}>
+      <div className="card">
         <div className="text-center py-12">
           <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-white/5 flex items-center justify-center">
             <HistoryIcon className="w-6 h-6 text-slate-500" />
