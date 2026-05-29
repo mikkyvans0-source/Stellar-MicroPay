@@ -326,6 +326,19 @@ export default function TransactionList({
           <p className="text-slate-600 text-xs mt-1">
             Send your first payment to get started
           </p>
+          {process.env.NEXT_PUBLIC_STELLAR_NETWORK !== "mainnet" && (
+            <p className="text-xs mt-3">
+              Need test XLM?{" "}
+              <a
+                href={`https://friendbot.stellar.org/?addr=${publicKey}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-stellar-400 hover:underline"
+              >
+                Fund this account with Friendbot
+              </a>
+            </p>
+          )}
         </div>
       </div>
     );
@@ -469,7 +482,7 @@ export default function TransactionList({
               )}
               
               <a
-                href={explorerUrl(tx.transactionHash)}
+                href={explorerUrl(tx.transactionHash) ?? undefined}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="opacity-0 group-hover:opacity-100 transition-opacity text-slate-500 hover:text-stellar-400"
