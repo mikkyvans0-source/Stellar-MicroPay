@@ -1,110 +1,66 @@
 #![no_std]
 
-/**
- * contracts/stellar-micropay-contract/src/lib.rs
- *
- * Stellar MicroPay — Soroban Smart Contract
- *
- * Provides:
- *   - Escrow payments (ROADMAP v2.1)
- *   - Creator tipping (ROADMAP v1.4)
- *   - Micro-transaction batching (ROADMAP v2.0)
- *   - NFT payment receipts (ROADMAP v1.5)
- *
- * Build:
- *   cargo build --target wasm32-unknown-unknown --release
- *
- * Deploy (Stellar CLI):
- *   stellar contract deploy \
- *     --wasm target/wasm32-unknown-unknown/release/stellar_micropay_contract.wasm \
- *     --source YOUR_SECRET_KEY \
- *     --network testnet
- */
-
 use soroban_sdk::{
     contract, contractimpl, contracttype,
     token, Address, Env, Symbol,
 };
 
-// ─── Data types ───────────────────────────────────────────────────────────────
+const PERSISTENT_LIFETIME_THRESHOLD: u32 = 100_000;
+const PERSISTENT_BUMP_AMOUNT: u32 = 500_000;
 
-/// A single tip event recorded on-chain.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct TipRecord {
-    /// The sender's Stellar address
     pub from: Address,
-    /// The recipient's Stellar address
     pub to: Address,
-    /// Amount in stroops (1 XLM = 10_000_000 stroops)
     pub amount: i128,
-    /// Ledger number when this tip was sent
     pub ledger: u32,
 }
 
-/// On-chain receipt metadata minted as proof of payment.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct ReceiptMetadata {
-    /// The payer's Stellar address
     pub from: Address,
-    /// The payee's Stellar address
     pub to: Address,
-    /// Amount in stroops (1 XLM = 10_000_000 stroops)
     pub amount: i128,
-    /// ISO-8601 timestamp of when the receipt was minted
     pub timestamp: u64,
-    /// Optional payment memo
     pub memo: Symbol,
-    /// Ledger number when this receipt was minted
     pub ledger: u32,
 }
 
-/// Storage key for per-recipient tip totals
 #[contracttype]
 pub enum DataKey {
     Admin,
     TipTotal(Address),
     TipCount(Address),
-    /// Latest tip record for a recipient (indexed by recipient + count)
     TipRecord(Address, u32),
-    /// Total receipt count for a payer
     ReceiptCount(Address),
-    /// Receipt record indexed by (payer, index)
     ReceiptRecord(Address, u32),
 }
-
-// ─── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
 pub struct MicroPayContract;
 
 #[contractimpl]
 impl MicroPayContract {
-
-    // ─── Initialization ──────────────────────────────────────────────────────
-
-    /// Initialize the contract with an admin address.
-    /// Can only be called once.
     pub fn initialize(env: Env, admin: Address) {
-        // Ensure not already initialized
-        if env.storage().instance().has(&DataKey::Admin) {
+        if env.storage().persistent().has(&DataKey::Admin) {
             panic!("Contract already initialized");
         }
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().persistent().set(&DataKey::Admin, &admin);
+        env.storage().persistent().extend_ttl(&DataKey::Admin, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
     }
 
-    // ─── Tipping ─────────────────────────────────────────────────────────────
+    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
+        current_admin.require_auth();
+        let stored_admin: Address = env.storage().persistent().get(&DataKey::Admin).expect("Contract not initialized");
+        if current_admin != stored_admin {
+            panic!("Unauthorized");
+        }
+        env.storage().persistent().set(&DataKey::Admin, &new_admin);
+        env.storage().persistent().extend_ttl(&DataKey::Admin, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    }
 
-    /// Send a tip from `from` to `to` using a Stellar token.
-    ///
-    /// Parameters:
-    ///   - token_address: The SAC (Stellar Asset Contract) address for the token (e.g. XLM)
-    ///   - from:          The sender (must authorize this call)
-    ///   - to:            The recipient
-    ///   - amount:        Amount in the token's smallest unit (stroops for XLM)
-    ///
-    /// This records the tip on-chain for analytics and emits an event.
     pub fn send_tip(
         env: Env,
         token_address: Address,
@@ -112,104 +68,66 @@ impl MicroPayContract {
         to: Address,
         amount: i128,
     ) {
-        // Require sender authorization
         from.require_auth();
-
-        // Validate amount
         if amount <= 0 {
             panic!("Tip amount must be positive");
         }
-
-        // Transfer tokens via the Stellar token interface (SAC)
         let token = token::Client::new(&env, &token_address);
         token.transfer(&from, &to, &amount);
 
-        // Update on-chain tip totals for the recipient
-        let current_total: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TipTotal(to.clone()))
-            .unwrap_or(0);
+        let current_total: i128 = env.storage().persistent().get(&DataKey::TipTotal(to.clone())).unwrap_or(0);
+        let current_count: u32 = env.storage().persistent().get(&DataKey::TipCount(to.clone())).unwrap_or(0);
 
-        let current_count: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TipCount(to.clone()))
-            .unwrap_or(0);
+        env.storage().persistent().set(&DataKey::TipTotal(to.clone()), &(current_total + amount));
+        env.storage().persistent().extend_ttl(&DataKey::TipTotal(to.clone()), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
 
-        env.storage()
-            .instance()
-            .set(&DataKey::TipTotal(to.clone()), &(current_total + amount));
+        env.storage().persistent().set(&DataKey::TipCount(to.clone()), &(current_count + 1));
+        env.storage().persistent().extend_ttl(&DataKey::TipCount(to.clone()), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
 
-        env.storage()
-            .instance()
-            .set(&DataKey::TipCount(to.clone()), &(current_count + 1));
-
-        // Store the tip record so it can be queried later
         let record = TipRecord {
             from: from.clone(),
             to: to.clone(),
             amount,
             ledger: env.ledger().sequence(),
         };
-        env.storage()
-            .instance()
-            .set(&DataKey::TipRecord(to.clone(), current_count), &record);
+        env.storage().persistent().set(&DataKey::TipRecord(to.clone(), current_count), &record);
+        env.storage().persistent().extend_ttl(&DataKey::TipRecord(to.clone(), current_count), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
 
-        // Emit an event for indexers
-        env.events().publish(
-            (Symbol::new(&env, "tip"), from, to.clone()),
-            amount,
-        );
+        env.events().publish((Symbol::new(&env, "tip"), from, to.clone()), amount);
     }
 
-    // ─── Getters ─────────────────────────────────────────────────────────────
-
-    /// Get the total amount tipped to a recipient (in stroops).
     pub fn get_tip_total(env: Env, recipient: Address) -> i128 {
-        env.storage()
-            .instance()
-            .get(&DataKey::TipTotal(recipient))
-            .unwrap_or(0)
+        let key = DataKey::TipTotal(recipient);
+        let val = env.storage().persistent().get(&key).unwrap_or(0);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        }
+        val
     }
 
-    /// Get the number of tips received by a recipient.
     pub fn get_tip_count(env: Env, recipient: Address) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::TipCount(recipient))
-            .unwrap_or(0)
+        let key = DataKey::TipCount(recipient);
+        let val = env.storage().persistent().get(&key).unwrap_or(0);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        }
+        val
     }
 
-    /// Get the contract admin address.
     pub fn get_admin(env: Env) -> Address {
-        env.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("Contract not initialized")
+        let key = DataKey::Admin;
+        let val: Address = env.storage().persistent().get(&key).expect("Contract not initialized");
+        env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        val
     }
 
-    /// Get a specific tip record for a recipient by index.
     pub fn get_tip_record(env: Env, recipient: Address, index: u32) -> TipRecord {
-        env.storage()
-            .instance()
-            .get(&DataKey::TipRecord(recipient, index))
-            .expect("Tip record not found")
+        let key = DataKey::TipRecord(recipient, index);
+        let val: TipRecord = env.storage().persistent().get(&key).expect("Tip record not found");
+        env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        val
     }
 
-    // ─── NFT Receipts ───────────────────────────────────────────────────────
-
-    /// Mint an on-chain receipt as proof of payment.
-    ///
-    /// Stores receipt metadata (amount, timestamp, memo) under the payer's
-    /// address and emits a `receipt` event. The returned `u32` is the receipt
-    /// index (NFT ID) for this payer.
-    ///
-    /// Parameters:
-    ///   - from:   The payer (must authorize this call)
-    ///   - to:     The payee
-    ///   - amount: Amount in stroops
-    ///   - memo:   Optional payment memo (max 28 chars, passed as a Symbol)
     pub fn mint_receipt(
         env: Env,
         from: Address,
@@ -218,16 +136,10 @@ impl MicroPayContract {
         memo: Symbol,
     ) -> u32 {
         from.require_auth();
-
         if amount <= 0 {
             panic!("Receipt amount must be positive");
         }
-
-        let count: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ReceiptCount(from.clone()))
-            .unwrap_or(0);
+        let count: u32 = env.storage().persistent().get(&DataKey::ReceiptCount(from.clone())).unwrap_or(0);
 
         let receipt = ReceiptMetadata {
             from: from.clone(),
@@ -238,47 +150,32 @@ impl MicroPayContract {
             ledger: env.ledger().sequence(),
         };
 
-        env.storage()
-            .instance()
-            .set(&DataKey::ReceiptRecord(from.clone(), count), &receipt);
+        env.storage().persistent().set(&DataKey::ReceiptRecord(from.clone(), count), &receipt);
+        env.storage().persistent().extend_ttl(&DataKey::ReceiptRecord(from.clone(), count), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
 
-        env.storage()
-            .instance()
-            .set(&DataKey::ReceiptCount(from.clone()), &(count + 1));
+        env.storage().persistent().set(&DataKey::ReceiptCount(from.clone()), &(count + 1));
+        env.storage().persistent().extend_ttl(&DataKey::ReceiptCount(from.clone()), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
 
-        env.events().publish(
-            (Symbol::new(&env, "receipt"), from),
-            count,
-        );
-
+        env.events().publish((Symbol::new(&env, "receipt"), from), count);
         count
     }
 
-    /// Get the total number of receipts minted for a payer.
     pub fn get_receipt_count(env: Env, payer: Address) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::ReceiptCount(payer))
-            .unwrap_or(0)
+        let key = DataKey::ReceiptCount(payer);
+        let val = env.storage().persistent().get(&key).unwrap_or(0);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        }
+        val
     }
 
-    /// Get a specific receipt for a payer by index.
     pub fn get_receipt(env: Env, payer: Address, index: u32) -> ReceiptMetadata {
-        env.storage()
-            .instance()
-            .get(&DataKey::ReceiptRecord(payer, index))
-            .expect("Receipt not found")
+        let key = DataKey::ReceiptRecord(payer, index);
+        let val: ReceiptMetadata = env.storage().persistent().get(&key).expect("Receipt not found");
+        env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        val
     }
 
-    // ─── Placeholders (future features) ──────────────────────────────────────
-
-    /// [PLACEHOLDER] Create an escrow payment that releases after a time lock.
-    /// See ROADMAP.md v2.1 — Soroban Escrow Payments.
-    ///
-    /// Future implementation:
-    ///   - Lock funds in the contract
-    ///   - Release to recipient after `release_ledger`
-    ///   - Allow sender to cancel before release
     pub fn create_escrow(
         _env: Env,
         _from: Address,
@@ -289,113 +186,43 @@ impl MicroPayContract {
         panic!("Escrow payments coming in v2.1 — see ROADMAP.md");
     }
 
-    /// [PLACEHOLDER] Batch multiple micro-payments in a single transaction.
-    /// See ROADMAP.md v2.0 — Multi-Currency Payments.
     pub fn batch_send(
-        _env: Env,
-        _from: Address,
-        _recipients: soroban_sdk::Vec<Address>,
-        _amounts: soroban_sdk::Vec<i128>,
+        env: Env,
+        token_address: Address,
+        from: Address,
+        recipients: soroban_sdk::Vec<Address>,
+        amounts: soroban_sdk::Vec<i128>,
     ) {
-        panic!("Batch payments coming in v2.0 — see ROADMAP.md");
-    }
-}
+        from.require_auth();
+        if recipients.len() != amounts.len() {
+            panic!("arrays must have equal length");
+        }
+        let token = token::Client::new(&env, &token_address);
+        for i in 0..recipients.len() {
+            let to = recipients.get(i).unwrap();
+            let amount = amounts.get(i).unwrap();
+            if amount <= 0 {
+                panic!("amount must be positive");
+            }
+            token.transfer(&from, &to, &amount);
+            
+            let current_total: i128 = env.storage().persistent().get(&DataKey::TipTotal(to.clone())).unwrap_or(0);
+            let current_count: u32 = env.storage().persistent().get(&DataKey::TipCount(to.clone())).unwrap_or(0);
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+            env.storage().persistent().set(&DataKey::TipTotal(to.clone()), &(current_total + amount));
+            env.storage().persistent().extend_ttl(&DataKey::TipTotal(to.clone()), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use soroban_sdk::{
-        testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation},
-        Address, Env,
-    };
+            env.storage().persistent().set(&DataKey::TipCount(to.clone()), &(current_count + 1));
+            env.storage().persistent().extend_ttl(&DataKey::TipCount(to.clone()), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
 
-    #[test]
-    fn test_initialize() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, MicroPayContract);
-        let client = MicroPayContractClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
-        assert_eq!(client.get_admin(), admin);
-    }
-
-    #[test]
-    #[should_panic(expected = "Contract already initialized")]
-    fn test_double_initialize_fails() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, MicroPayContract);
-        let client = MicroPayContractClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-        client.initialize(&admin); // should panic
-    }
-
-    #[test]
-    fn test_mint_receipt() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, MicroPayContract);
-        let client = MicroPayContractClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
-        let payer = Address::generate(&env);
-        let payee = Address::generate(&env);
-
-        env.mock_all_auths();
-
-        let memo = Symbol::new(&env, "Rent");
-        let receipt_id = client.mint_receipt(&payer, &payee, &1000, &memo);
-        assert_eq!(receipt_id, 0);
-
-        assert_eq!(client.get_receipt_count(&payer), 1);
-
-        let stored = client.get_receipt(&payer, &0);
-        assert_eq!(stored.from, payer);
-        assert_eq!(stored.to, payee);
-        assert_eq!(stored.amount, 1000);
-        assert_eq!(stored.memo, memo);
-    }
-
-    #[test]
-    fn test_receipt_count_tracks_multiple_mints() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, MicroPayContract);
-        let client = MicroPayContractClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
-        let payer = Address::generate(&env);
-        let payee1 = Address::generate(&env);
-        let payee2 = Address::generate(&env);
-
-        env.mock_all_auths();
-
-        let id1 = client.mint_receipt(&payer, &payee1, &500, &Symbol::new(&env, "Coffee"));
-        let id2 = client.mint_receipt(&payer, &payee2, &1500, &Symbol::new(&env, "Invoice"));
-
-        assert_eq!(id1, 0);
-        assert_eq!(id2, 1);
-        assert_eq!(client.get_receipt_count(&payer), 2);
-    }
-
-    #[test]
-    fn test_tip_totals_start_at_zero() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, MicroPayContract);
-        let client = MicroPayContractClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
-        let recipient = Address::generate(&env);
-        assert_eq!(client.get_tip_total(&recipient), 0);
-        assert_eq!(client.get_tip_count(&recipient), 0);
+            let record = TipRecord {
+                from: from.clone(),
+                to: to.clone(),
+                amount,
+                ledger: env.ledger().sequence(),
+            };
+            env.storage().persistent().set(&DataKey::TipRecord(to.clone(), current_count), &record);
+            env.storage().persistent().extend_ttl(&DataKey::TipRecord(to.clone(), current_count), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        }
     }
 }

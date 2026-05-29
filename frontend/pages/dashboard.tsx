@@ -1050,8 +1050,8 @@ export default function Dashboard({ stellarURI }: DashboardProps) {
         />
       )}
 
-      <div className="grid lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-1">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-1 order-1 lg:order-none">
           <div className="card mb-6 bg-cosmos-950/80 border-white/10">
             <div className="flex gap-2 p-2 rounded-3xl bg-white/5">
               <button
@@ -1108,7 +1108,7 @@ export default function Dashboard({ stellarURI }: DashboardProps) {
           </div>
         </div>
 
-        <div className="lg:col-span-1">
+        <div className="lg:col-span-1 order-2 lg:order-none">
           <div className="card h-full">
             <div className="flex items-center justify-between mb-5">
               <h2 className="font-display text-lg font-semibold text-white flex items-center gap-2">

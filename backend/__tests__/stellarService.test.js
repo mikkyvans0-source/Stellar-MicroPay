@@ -37,6 +37,7 @@ describe("stellarService", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    stellarService.clearAccountCache();
     mockPaymentsCursor.mockImplementation(() => ({ call: mockPaymentsCall }));
     mockPaymentsOrder.mockImplementation(() => ({ cursor: mockPaymentsCursor, call: mockPaymentsCall }));
     mockPaymentsLimit.mockImplementation(() => ({ order: mockPaymentsOrder }));

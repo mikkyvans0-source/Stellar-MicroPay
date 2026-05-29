@@ -87,12 +87,15 @@ export default function Trade() {
 
       // Sign with Freighter
       const { signTransaction } = await import("@stellar/freighter-api");
-      const signedXDR = await signTransaction(transaction.toXDR(), {
+      const signed = await signTransaction(transaction.toXDR(), {
         networkPassphrase: NETWORK_PASSPHRASE,
       });
+      if (signed.error) {
+        throw new Error(signed.error.message || "Transaction signing failed");
+      }
 
       // Submit transaction
-      await submitTransaction(signedXDR);
+      await submitTransaction(signed.signedTxXdr);
       
       showToast("Offer cancelled successfully!", "success");
       loadOpenOffers(); // Reload offers

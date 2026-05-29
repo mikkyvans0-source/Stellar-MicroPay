@@ -11,13 +11,13 @@
 
 import {
   isConnected,
-  getPublicKey,
+  getAddress,
   signTransaction,
   requestAccess,
   isAllowed,
 } from "@stellar/freighter-api";
 
-import { getNetworkPassphrase, getNetworkConfig } from "./stellar";
+import { getNetworkPassphrase } from "./stellar";
 
 // ─── SEP-0010 helpers ────────────────────────────────────────────────────────
 
@@ -91,11 +91,7 @@ export const EXTENSION_URLS: Record<SupportedBrowser, string> = {
 export async function isFreighterInstalled(): Promise<boolean> {
   try {
     const result = await isConnected();
-    // isConnected returns { isConnected: boolean } or boolean depending on version
-    if (typeof result === "object" && result !== null && "isConnected" in result) {
-      return (result as { isConnected: boolean }).isConnected;
-    }
-    return Boolean(result);
+    return Boolean(result.isConnected);
   } catch {
     return false;
   }
@@ -107,10 +103,7 @@ export async function isFreighterInstalled(): Promise<boolean> {
 export async function hasSiteAccess(): Promise<boolean> {
   try {
     const result = await isAllowed();
-    if (typeof result === "object" && result !== null && "isAllowed" in result) {
-      return (result as { isAllowed: boolean }).isAllowed;
-    }
-    return Boolean(result);
+    return Boolean(result.isAllowed);
   } catch {
     return false;
   }
@@ -138,14 +131,10 @@ export async function connectWallet(): Promise<{
 
   try {
     // 2. Request access from the user
-    await requestAccess();
+    const access = await requestAccess();
 
     // 3. Get the public key
-    const result = await getPublicKey();
-    const publicKey =
-      typeof result === "object" && result !== null && "publicKey" in result
-        ? (result as { publicKey: string }).publicKey
-        : (result as string);
+    const publicKey = access.address || (await getAddress()).address;
 
     if (!publicKey) {
       return { publicKey: null, error: "No public key returned from Freighter." };
@@ -175,12 +164,8 @@ export async function getConnectedPublicKey(): Promise<string | null> {
     const allowed = await hasSiteAccess();
     if (!allowed) return null;
 
-    const result = await getPublicKey();
-    const pk =
-      typeof result === "object" && result !== null && "publicKey" in result
-        ? (result as { publicKey: string }).publicKey
-        : (result as string);
-    return pk || null;
+    const { address } = await getAddress();
+    return address || null;
   } catch {
     return null;
   }
@@ -222,20 +207,15 @@ export async function signTransactionWithWallet(
   transactionXDR: string
 ): Promise<{ signedXDR: string | null; error: string | null }> {
   try {
-    const config = getNetworkConfig();
-    const network = config.network === "mainnet" ? "MAINNET" : "TESTNET";
-
-    const result = await signTransaction(transactionXDR, {
+    const signed = await signTransaction(transactionXDR, {
       networkPassphrase: getNetworkPassphrase(),
-      network,
     });
 
-    const signedXDR =
-      typeof result === "object" && result !== null && "signedTransaction" in result
-        ? (result as { signedTransaction: string }).signedTransaction
-        : (result as string);
+    if (signed.error) {
+      throw new Error(signed.error.message || "Freighter signing failed");
+    }
 
-    return { signedXDR, error: null };
+    return { signedXDR: signed.signedTxXdr, error: null };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
 
@@ -279,5 +259,3 @@ export async function signTransactionWithLedger(xdr: string): Promise<{ signedXD
 export async function getLedgerPublicKey(): Promise<{ publicKey: string | null; error: string | null }> {
   return { publicKey: null, error: "Ledger support not implemented." };
 }
-
-
