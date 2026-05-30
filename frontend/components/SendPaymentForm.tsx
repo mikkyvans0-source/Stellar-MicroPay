@@ -686,6 +686,7 @@ export default function SendPaymentForm({
           </div>
         </div>
 
+
         <div className="flex flex-col gap-3">
           <a href={explorerUrl(txHash) ?? undefined} target="_blank" rel="noopener noreferrer" className="btn-primary flex items-center justify-center gap-2">
             View on Explorer <ExternalLinkIcon className="h-4 w-4" />
