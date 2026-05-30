@@ -1,99 +1,101 @@
-/**
- * src/services/webhookService.js
- * Webhook registry + delivery for incoming-payment notifications (#279).
- *
- * Users register a URL + secret for their account; when an incoming payment is
- * detected on Horizon, a JSON payload signed with HMAC-SHA256 is POSTed to the
- * URL so the receiver can verify authenticity.
- *
- * Registry is in-memory (single-process). Swap for a persistent store when the
- * backend is horizontally scaled.
- */
 "use strict";
 
 const crypto = require("crypto");
-const axios = require("axios");
-const { generateWebhookSignature } = require("../utils/webhookSignature");
+const { Horizon } = require("@stellar/stellar-sdk");
 const logger = require("../utils/logger");
+require("dotenv").config();
 
-const webhooks = new Map(); // id -> { id, account, url, secret, createdAt }
-const watchedAccounts = new Map(); // account -> stream close handle
+const HORIZON_URL = process.env.HORIZON_URL || "https://horizon-testnet.stellar.org";
+const server = new Horizon.Server(HORIZON_URL);
 
-function registerWebhook({ account, url, secret }) {
-  const id = crypto.randomUUID();
-  const record = { id, account, url, secret, createdAt: new Date().toISOString() };
-  webhooks.set(id, record);
-  return record;
+// In-memory store: { id, publicKey, url, secret, createdAt }
+const webhooks = new Map();
+let nextId = 1;
+
+function registerWebhook(publicKey, url, secret) {
+  const id = String(nextId++);
+  const webhook = { id, publicKey, url, secret, createdAt: new Date().toISOString() };
+  webhooks.set(id, webhook);
+  startMonitoring(webhook);
+  logger.info(JSON.stringify({ type: "webhook_registered", id, publicKey, url }));
+  return webhook;
 }
 
-/** Webhooks for an account, with secrets stripped — safe to return to clients. */
-function listWebhooks(account) {
-  return [...webhooks.values()]
-    .filter((w) => !account || w.account === account)
-    .map(({ secret, ...safe }) => safe);
+function getWebhooksByPublicKey(publicKey) {
+  return Array.from(webhooks.values()).filter(w => w.publicKey === publicKey);
 }
 
-function getWebhook(id) {
-  return webhooks.get(id);
+function deleteWebhook(id) {
+  const exists = webhooks.has(id);
+  if (exists) {
+    webhooks.delete(id);
+    logger.info(JSON.stringify({ type: "webhook_deleted", id }));
+  }
+  return exists;
 }
 
-function removeWebhook(id) {
-  return webhooks.delete(id);
+function signPayload(secret, payload) {
+  return crypto.createHmac("sha256", secret).update(JSON.stringify(payload)).digest("hex");
 }
 
-/** Test helper — reset registry and watcher state. */
-function _reset() {
-  webhooks.clear();
-  watchedAccounts.clear();
+async function deliverWebhook(webhook, payload) {
+  const signature = signPayload(webhook.secret, payload);
+  try {
+    const res = await fetch(webhook.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Signature": signature,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      logger.error(JSON.stringify({ type: "webhook_delivery_failed", id: webhook.id, status: res.status, url: webhook.url }));
+    } else {
+      logger.info(JSON.stringify({ type: "webhook_delivered", id: webhook.id, url: webhook.url }));
+    }
+  } catch (err) {
+    logger.error(JSON.stringify({ type: "webhook_delivery_error", id: webhook.id, url: webhook.url, error: err.message }));
+  }
 }
 
-/** POST a signed payload to a single webhook. `client` is injectable for tests. */
-async function deliverWebhook(webhook, payload, { client = axios } = {}) {
-  const body = JSON.stringify(payload);
-  const signature = generateWebhookSignature(body, webhook.secret);
-  return client.post(webhook.url, payload, {
-    headers: {
-      "Content-Type": "application/json",
-      "X-Webhook-Signature": signature,
-    },
-    timeout: 5000,
-  });
+const activeStreams = new Map();
+
+function startMonitoring(webhook) {
+  if (activeStreams.has(webhook.publicKey)) return;
+
+  const closeStream = server
+    .payments()
+    .forAccount(webhook.publicKey)
+    .cursor("now")
+    .stream({
+      onmessage: async (payment) => {
+        if (payment.type !== "payment" || payment.to !== webhook.publicKey) return;
+        const payload = {
+          event: "payment.received",
+          publicKey: webhook.publicKey,
+          payment: {
+            id: payment.id,
+            from: payment.from,
+            to: payment.to,
+            amount: payment.amount,
+            asset: payment.asset_type === "native" ? "XLM" : payment.asset_code,
+            createdAt: payment.created_at,
+          },
+        };
+        const hooks = getWebhooksByPublicKey(webhook.publicKey);
+        for (const hook of hooks) {
+          await deliverWebhook(hook, payload);
+        }
+      },
+      onerror: (err) => {
+        logger.error(JSON.stringify({ type: "horizon_sse_error", publicKey: webhook.publicKey, error: err.message }));
+        activeStreams.delete(webhook.publicKey);
+      },
+    });
+
+  activeStreams.set(webhook.publicKey, closeStream);
+  logger.info(JSON.stringify({ type: "horizon_monitoring_started", publicKey: webhook.publicKey }));
 }
 
-/** Deliver an incoming-payment event to every webhook registered for `account`. */
-async function notifyIncomingPayment(account, payment, opts = {}) {
-  const targets = [...webhooks.values()].filter((w) => w.account === account);
-  await Promise.all(
-    targets.map((w) =>
-      deliverWebhook(w, { type: "payment.received", account, payment }, opts).catch((err) =>
-        logger.error({ err: err.message, webhookId: w.id }, "webhook delivery failed"),
-      ),
-    ),
-  );
-}
-
-/**
- * Ensure a Horizon payment stream is running for `account` (idempotent). Lazily
- * requires stellarService so this module stays unit-testable without Horizon.
- */
-function ensureWatching(account) {
-  if (watchedAccounts.has(account)) return;
-  // eslint-disable-next-line global-require
-  const stellarService = require("./stellarService");
-  if (typeof stellarService.streamIncomingPayments !== "function") return;
-  const close = stellarService.streamIncomingPayments(account, (payment) =>
-    notifyIncomingPayment(account, payment),
-  );
-  watchedAccounts.set(account, close || (() => {}));
-}
-
-module.exports = {
-  registerWebhook,
-  listWebhooks,
-  getWebhook,
-  removeWebhook,
-  deliverWebhook,
-  notifyIncomingPayment,
-  ensureWatching,
-  _reset,
-};
+module.exports = { registerWebhook, getWebhooksByPublicKey, deleteWebhook };
