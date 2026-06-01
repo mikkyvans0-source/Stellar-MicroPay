@@ -26,6 +26,7 @@ const swaggerUi = require("swagger-ui-express");
 const swaggerSpec = require("./swagger");
 const { startTurretsServer } = require("./turretsServer");
 const logger = require("./utils/logger");
+const { validateEnv } = require("./config/validateEnv");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -187,6 +188,7 @@ app.use((err, req, res, next) => {
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 if (require.main === module) {
+  validateEnv();
   app.listen(PORT, () => {
     console.log(`
   ✨ Stellar MicroPay API

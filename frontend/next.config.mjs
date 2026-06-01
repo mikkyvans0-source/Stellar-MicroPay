@@ -1,4 +1,7 @@
 import { withSentryConfig } from "@sentry/nextjs";
+import { validateEnv } from "./scripts/validateEnv.mjs";
+
+validateEnv();
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
